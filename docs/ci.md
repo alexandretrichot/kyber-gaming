@@ -8,14 +8,11 @@
 | Job | Runner | Output |
 | --- | --- | --- |
 | `linux` | `ubuntu-24.04` | `kyber-linux-x86_64.tar.bz2` (server + client, upstream's `build-linux.sh -p`) |
-| `macos` (`arm64`, `x86_64`) | `macos-15` / `macos-15-intel` (native builds) | `Kyber-Client-macos-<arch>.app.zip` |
+| `macos` (`arm64`) | `macos-15` | `Kyber-Client-macos-arm64.app.zip` |
 | `runtime-image` | `ubuntu-24.04` | `ghcr.io/<owner>/kg-runtime` |
 | `release` | `ubuntu-24.04` | GitHub Release with all of the above |
 
-The macOS zip is upstream's `Kyber-Client.app.zip` renamed per arch so both can live in one release.
-Cross-building `x86_64` on Apple Silicon (`build-macos.sh -a x86_64`) was tried and fails: FFmpeg's
-configure picks up the host's arm64 Homebrew `liblzma`. `macos-15-intel` is GitHub's last
-Intel image; once it is retired, the `x86_64` client needs a Homebrew-free cross-build or must be dropped.
+The macOS zip is upstream's `Kyber-Client.app.zip`, renamed with its arch. Intel Macs are not supported.
 
 The app is unsigned: Gatekeeper needs `xattr -dr com.apple.quarantine Kyber-Client.app` after unzipping.
 
@@ -24,10 +21,10 @@ Linux with mingw (`build-win32.sh -d -w` then `-s -p -w`, Rust target `x86_64-pc
 
 ## Where artifacts land
 
-- **Every push to `main` and every PR**: workflow artifacts `kyber-linux-x86_64`, `kyber-macos-arm64`,
-  `kyber-macos-x86_64` (kept 90 days by default).
-- **Push to `main`**: `ghcr.io/<owner>/kg-runtime:sha-<short>`.
-- **Tag `v*`**: GitHub Release `<tag>` with the three packages, `ghcr.io/<owner>/kg-runtime:<tag>`.
+- **Every push to `main` and every PR**: workflow artifacts `kyber-linux-x86_64` and `kyber-macos-arm64`
+  (kept 90 days by default).
+- **Push to `main`**: `ghcr.io/<owner>/kg-runtime:sha-<short>` and `:latest`.
+- **Tag `v*`**: GitHub Release `<tag>` with both packages, `ghcr.io/<owner>/kg-runtime:<tag>`.
   The release notes name the exact Kyber commit and link to its source (AGPLv3).
 
 ## kg-runtime image
