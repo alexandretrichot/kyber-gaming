@@ -1,0 +1,292 @@
+name: Kyber
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kyber-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  KYBER_SRC: third_party/kyber-desktop
+  KYBER_URL: https://gitlab.com/kyber.stream/apps/kyber-desktop
+  RUST_VERSION: 1.89.0
+  CARGO_C_VERSION: 0.10.15
+  MESON_VERSION: 1.10.0
+  DEPS_CACHE_VERSION: 1
+  # Kyber's build scripts clone over SSH unless CI_JOB_TOKEN (GitLab CI) is set.
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: url.https://gitlab.com/.insteadOf
+  GIT_CONFIG_VALUE_0: "git@gitlab.com:"
+
+jobs:
+  linux:
+    name: Linux x86_64 (server + client)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      OUT: ${{ github.workspace }}/rootfs
+    outputs:
+      kyber-rev: ${{ steps.pin.outputs.rev }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - id: pin
+        name: Compute Kyber pin
+        run: &pin |
+          rev=$(git -C "$KYBER_SRC" rev-parse HEAD)
+          # The out dir path is part of the key: the cached rootfs embeds absolute
+          # paths (.pc/.la files, macOS install names) that must match on restore.
+          # shellcheck disable=SC2016
+          hash=$({
+            echo "$rev"
+            git -C "$KYBER_SRC" submodule foreach --recursive --quiet 'echo "$displaypath $sha1"'
+            echo "$OUT"
+          } | shasum -a 256 | cut -c1-16)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Install system packages
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git curl wget unzip \
+            llvm-dev libclang-dev clang libssl-dev \
+            autoconf libtool python3 python3-setuptools python3-mako python3-venv python3-jinja2 pipx \
+            lua5.4 liblua5.4-dev autopoint gettext bison flex nasm ant ragel help2man \
+            libdrm-dev libgbm-dev glslang-dev liblcms2-dev libpulse-dev \
+            libxcb-xkb-dev libxkbcommon-dev libxcb-xtest0-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libwayland-dev wayland-protocols libvulkan-dev \
+            libevdev-dev libudev-dev libinput-dev \
+            libjack-jackd2-dev
+          # libjack-jackd2-dev is installed upfront: build-dep's resolver can give up on the
+          # "libjack-jackd2-dev | libjack-dev" alternative when an i386 libjack is present.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get build-dep -y vlc
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - id: deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OUT }}
+          key: kyber-deps-v${{ env.DEPS_CACHE_VERSION }}-linux-x86_64-${{ steps.pin.outputs.hash }}
+
+      - name: Install native deps toolchain
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked "cargo-c@$CARGO_C_VERSION"
+          # The distro meson is older than the 1.10 kymedia requires.
+          pipx install "meson==$MESON_VERSION"
+          pipx inject meson jinja2
+          pipx environment --value PIPX_BIN_DIR >> "$GITHUB_PATH"
+
+      - name: Build native deps
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ env.KYBER_SRC }}
+        run: ./build-linux.sh -d -o "$OUT"
+
+      - if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OUT }}
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.KYBER_SRC }}/target
+          key: kyber-cargo-linux-x86_64-${{ steps.pin.outputs.hash }}
+
+      - name: Build and package
+        working-directory: ${{ env.KYBER_SRC }}
+        run: ./build-linux.sh -s -p -o "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyber-linux-x86_64
+          path: ${{ env.KYBER_SRC }}/kyber-linux-x86_64.tar.bz2
+          compression-level: 0
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }} (client)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          # Cross-building x86_64 on Apple Silicon fails: FFmpeg's configure picks up the
+          # runner's arm64 Homebrew libs (liblzma) and the x86_64 link breaks.
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    env:
+      OUT: ${{ github.workspace }}/rootfs
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - id: pin
+        name: Compute Kyber pin
+        run: *pin
+
+      - name: Install system packages
+        run: |
+          brew install m4 nasm openssl@3 pkg-config autoconf automake libtool cmake gettext meson ragel ant help2man bison
+          # Apple's bison is too old for VLC.
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - id: deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OUT }}
+          key: kyber-deps-v${{ env.DEPS_CACHE_VERSION }}-macos-${{ matrix.arch }}-${{ steps.pin.outputs.hash }}
+
+      - name: Install native deps toolchain
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked "cargo-c@$CARGO_C_VERSION"
+
+      - name: Build native deps
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ env.KYBER_SRC }}
+        run: ./build-macos.sh -d -a "$ARCH" -o "$OUT" client
+
+      - if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OUT }}
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.KYBER_SRC }}/target
+          key: kyber-cargo-macos-${{ matrix.arch }}-${{ steps.pin.outputs.hash }}
+
+      - name: Build and package
+        working-directory: ${{ env.KYBER_SRC }}
+        run: |
+          ./build-macos.sh -s -p -a "$ARCH" -o "$OUT" client
+          mv Kyber-Client.app.zip "Kyber-Client-macos-$ARCH.app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyber-macos-${{ matrix.arch }}
+          path: ${{ env.KYBER_SRC }}/Kyber-Client-macos-${{ matrix.arch }}.app.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  runtime-image:
+    name: kg-runtime image
+    needs: linux
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: kyber-linux-x86_64
+          path: dist
+
+      - name: Stage Kyber package
+        run: |
+          mkdir packaging/kg-runtime/kyber
+          tar -xjf dist/kyber-linux-x86_64.tar.bz2 --strip-components=1 -C packaging/kg-runtime/kyber
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/kg-runtime
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.description=Kyber ${{ needs.linux.outputs.kyber-rev }} for kyber-gaming VMs
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: packaging/kg-runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: KYBER_REV=${{ needs.linux.outputs.kyber-rev }}
+          # The VM agent extracts layers itself: keep a plain single-platform manifest,
+          # without the attestation manifests buildx adds by default.
+          provenance: false
+          sbom: false
+
+  release:
+    name: GitHub Release
+    needs: [linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KYBER_REV: ${{ needs.linux.outputs.kyber-rev }}
+        run: |
+          cat > notes.md <<EOF
+          Kyber built from [\`kyber-desktop@${KYBER_REV:0:12}\`]($KYBER_URL/-/tree/$KYBER_REV)
+          (full commit \`$KYBER_REV\`, with its pinned submodules).
+
+          Kyber is free software licensed under the GNU AGPLv3. The complete corresponding
+          source is available at $KYBER_URL/-/tree/$KYBER_REV and is pinned in this
+          repository as the \`third_party/kyber-desktop\` submodule.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag
