@@ -14,7 +14,8 @@ dpkg-query -W "libnvidia-compute-${major}${suffix}" >/dev/null || {
   echo "NVIDIA driver $driver_version is not installed from Ubuntu packages, cannot pin userspace libs" >&2
   exit 1
 }
-pkg_version=$(dpkg-query -W -f='${Version}' "libnvidia-compute-${major}${suffix}")
+# :amd64 matters on reruns, once the i386 twin is installed dpkg-query prints both versions glued together.
+pkg_version=$(dpkg-query -W -f='${Version}' "libnvidia-compute-${major}${suffix}:amd64")
 pinned() { for p in "$@"; do echo "${p}${major}${suffix}=${pkg_version}"; done; }
 pinned_i386() { for p in "$@"; do echo "${p}${major}${suffix}:i386=${pkg_version}"; done; }
 
@@ -27,7 +28,8 @@ apt-get install -y --no-install-recommends \
   libvulkan1 libvulkan1:i386 vulkan-tools \
   xserver-xorg-core xserver-xorg-input-libinput x11-xserver-utils xauth \
   openbox xterm dbus-user-session \
-  pipewire pipewire-pulse wireplumber pulseaudio-utils
+  pipewire pipewire-pulse wireplumber pulseaudio-utils \
+  libv4l-0t64
 
 # Valve's own package: the Steam license is accepted by the player in the Steam UI, not preseeded.
 if ! dpkg-query -W steam-launcher >/dev/null 2>&1; then

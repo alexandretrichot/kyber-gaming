@@ -28,6 +28,7 @@ RestartSec=3
 UNIT
 
 systemctl daemon-reload
+systemctl reset-failed kg-kyber.service 2>/dev/null || true
 systemctl restart kg-kyber.service
 for _ in $(seq 30); do
   ss -lnt "sport = :$KYBER_PORT" | grep -q LISTEN && exit 0
