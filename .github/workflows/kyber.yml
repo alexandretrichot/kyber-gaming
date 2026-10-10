@@ -133,10 +133,6 @@ jobs:
         include:
           - arch: arm64
             runner: macos-15
-          # Cross-building x86_64 on Apple Silicon fails: FFmpeg's configure picks up the
-          # runner's arm64 Homebrew libs (liblzma) and the x86_64 link breaks.
-          - arch: x86_64
-            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     env:
@@ -235,6 +231,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.description=Kyber ${{ needs.linux.outputs.kyber-rev }} for kyber-gaming VMs
 
