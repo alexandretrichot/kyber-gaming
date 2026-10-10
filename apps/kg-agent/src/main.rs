@@ -1,6 +1,8 @@
 mod bridge;
 mod install;
+mod layers;
 mod paths;
+mod provision;
 #[cfg(test)]
 mod testing;
 mod vault;
@@ -19,7 +21,8 @@ use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 
 use crate::bridge::Bridge;
-use crate::paths::{HOST_SOCKET, SOCKET_DIR};
+use crate::paths::{HOST_SOCKET, KYBER_PORT, SOCKET_DIR, STATE_DIR};
+use crate::provision::Provisioner;
 use crate::watchdog::Watchdog;
 
 #[derive(Parser)]
@@ -65,6 +68,7 @@ async fn serve(idle_after: Duration) -> Result<()> {
         vault: Arc::default(),
         registry: Registry::default().with(kg_provider_scaleway::Factory),
         activity: Arc::default(),
+        provisioner: Arc::new(Provisioner::new(provision::default_steps(), STATE_DIR.into(), KYBER_PORT)),
     });
     let watchdog = Watchdog {
         idle_after,

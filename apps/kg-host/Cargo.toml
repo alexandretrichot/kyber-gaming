@@ -1,0 +1,26 @@
+[package]
+name = "kg-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+directories = "6.0.0"
+futures = "0.3.34"
+iced = { version = "0.14.0", features = ["tokio"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+kg-protocol = { version = "0.1.0", path = "../../crates/kg-protocol" }
+kg-provider = { version = "0.1.0", path = "../../crates/kg-provider" }
+kg-provider-scaleway = { version = "0.1.0", path = "../../crates/kg-provider-scaleway" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+secrecy = { version = "0.10.3", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ssh-key = { version = "0.6.7", features = ["ed25519", "std"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "time", "sync"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

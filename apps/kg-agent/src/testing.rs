@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use crate::provision::{Ctx, Step};
 use kg_provider::{Instance, InstanceId, LaunchSpec, MachineType, Provider, ProviderAccess, ProviderFactory, Result};
 
 #[derive(Default, Clone)]
@@ -46,5 +47,39 @@ impl ProviderFactory for NullFactory {
     }
     fn connect(&self, _: &ProviderAccess) -> Result<Box<dyn Provider>> {
         Ok(Box::new(NullProvider::default()))
+    }
+}
+
+pub struct FakeStep {
+    name: &'static str,
+    done: bool,
+    fails: bool,
+}
+
+impl FakeStep {
+    pub fn ok(name: &'static str) -> Box<dyn Step> {
+        Box::new(Self { name, done: false, fails: false })
+    }
+    pub fn done(name: &'static str) -> Box<dyn Step> {
+        Box::new(Self { name, done: true, fails: false })
+    }
+    pub fn failing(name: &'static str) -> Box<dyn Step> {
+        Box::new(Self { name, done: false, fails: true })
+    }
+}
+
+#[async_trait]
+impl Step for FakeStep {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    async fn is_done(&self, _: &Ctx) -> anyhow::Result<bool> {
+        Ok(self.done)
+    }
+    async fn run(&self, _: &Ctx) -> anyhow::Result<()> {
+        if self.fails {
+            anyhow::bail!("boom");
+        }
+        Ok(())
     }
 }
