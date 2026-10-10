@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+exclude = ["third_party", "client"]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false

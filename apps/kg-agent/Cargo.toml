@@ -1,0 +1,24 @@
+[package]
+name = "kg-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+futures = "0.3.34"
+kg-protocol = { version = "0.1.0", path = "../../crates/kg-protocol" }
+kg-provider = { version = "0.1.0", path = "../../crates/kg-provider" }
+kg-provider-scaleway = { version = "0.1.0", path = "../../crates/kg-provider-scaleway" }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "process", "signal"] }
+tokio-util = { version = "0.7.20", features = ["codec"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+async-trait = "0.1.92"
+kg-provider-scaleway = { path = "../../crates/kg-provider-scaleway" }
+secrecy = "0.10.3"
+tokio = { version = "1.53.2", features = ["io-util", "net"] }

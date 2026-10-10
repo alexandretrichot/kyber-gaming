@@ -1,0 +1,128 @@
+//! Messages exchanged between the host app and the VM agent, over a Unix socket forwarded through SSH.
+//!
+//! Frames are length-prefixed JSON. SSH already provides encryption and authentication.
+
+use std::io;
+use std::marker::PhantomData;
+use std::path::PathBuf;
+
+use bytes::{Bytes, BytesMut};
+use kg_provider::{InstanceId, ProviderAccess};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
+
+pub const VERSION: u32 = 1;
+const MAX_FRAME: usize = 1 << 20;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostToAgent {
+    /// First message on every connection, including reconnections: the agent keeps `provider` in memory
+    /// only, so it is resent each time.
+    Hello { version: u32, instance: InstanceId, provider: ProviderAccess },
+    Heartbeat,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentToHost {
+    Welcome { version: u32 },
+    Rejected { reason: String },
+    SaveToHost { remote: PathBuf, suggested_name: String },
+}
+
+pub type HostCodec = JsonCodec<HostToAgent, AgentToHost>;
+pub type AgentCodec = JsonCodec<AgentToHost, HostToAgent>;
+
+pub struct JsonCodec<Out, In> {
+    frames: LengthDelimitedCodec,
+    _messages: PhantomData<fn(Out) -> In>,
+}
+
+impl<Out, In> Default for JsonCodec<Out, In> {
+    fn default() -> Self {
+        Self { frames: LengthDelimitedCodec::builder().max_frame_length(MAX_FRAME).new_codec(), _messages: PhantomData }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CodecError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("malformed message: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+impl<Out: Serialize, In> Encoder<Out> for JsonCodec<Out, In> {
+    type Error = CodecError;
+
+    fn encode(&mut self, message: Out, dst: &mut BytesMut) -> Result<(), CodecError> {
+        let json = serde_json::to_vec(&message)?;
+        self.frames.encode(Bytes::from(json), dst)?;
+        Ok(())
+    }
+}
+
+impl<Out, In: DeserializeOwned> Decoder for JsonCodec<Out, In> {
+    type Item = In;
+    type Error = CodecError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<In>, CodecError> {
+        match self.frames.decode(src)? {
+            Some(frame) => Ok(Some(serde_json::from_slice(&frame)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::{SinkExt, StreamExt};
+    use secrecy::{ExposeSecret, SecretString};
+    use tokio_util::codec::Framed;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn hello_and_welcome_cross_the_wire() {
+        let (host_end, agent_end) = tokio::io::duplex(4096);
+        let mut host = Framed::new(host_end, HostCodec::default());
+        let mut agent = Framed::new(agent_end, AgentCodec::default());
+
+        host.send(HostToAgent::Hello {
+            version: VERSION,
+            instance: InstanceId("server-1".into()),
+            provider: ProviderAccess { kind: "scaleway".into(), config: SecretString::from("{\"secret_key\":\"s3cret\"}") },
+        })
+        .await
+        .unwrap();
+
+        let Some(Ok(HostToAgent::Hello { version, instance, provider })) = agent.next().await else {
+            panic!("expected hello");
+        };
+        assert_eq!((version, instance.0.as_str()), (VERSION, "server-1"));
+        assert_eq!(provider.config.expose_secret(), "{\"secret_key\":\"s3cret\"}");
+
+        agent.send(AgentToHost::Welcome { version: VERSION }).await.unwrap();
+        assert_eq!(host.next().await.unwrap().unwrap(), AgentToHost::Welcome { version: VERSION });
+    }
+
+    #[test]
+    fn hello_debug_never_shows_credentials() {
+        let hello = HostToAgent::Hello {
+            version: VERSION,
+            instance: InstanceId("server-1".into()),
+            provider: ProviderAccess { kind: "scaleway".into(), config: SecretString::from("s3cret") },
+        };
+        assert!(!format!("{hello:?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn garbage_frame_is_an_error_not_a_panic() {
+        let mut codec = AgentCodec::default();
+        let mut buf = BytesMut::new();
+        LengthDelimitedCodec::new().encode(Bytes::from_static(b"{not json"), &mut buf).unwrap();
+        assert!(matches!(codec.decode(&mut buf), Err(CodecError::Json(_))));
+    }
+}
